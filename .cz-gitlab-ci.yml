@@ -1,0 +1,79 @@
+stages:
+  - build
+  - create-docker-image
+  - kubectl-deploy
+
+# 设置变量
+variables:
+  # TAG: 
+  # CI_COMMIT_REF_SLUG 转换后的项目的分支或tag名称;转换规则:先将项目的分支或tag名称的值转换成小写，最大不能超过63个字节，然后把除了0-9和a-z的其他字符转换成-
+  # CI_COMMIT_SHORT_SHA commit的版本号
+  TAG: '$CI_COMMIT_REF_SLUG-$CI_PIPELINE_ID'
+  # 仓库地址(也可以gitlab中设置)
+  REGISTRY: 'harbor.galaxyclouds.com'
+
+# 构建二进制文件
+build:
+  stage: build
+  # 指定执行镜像
+  image: $REGISTRY/base/golang:1.16.9
+  script:
+    # 查看代码文件
+    - pwd && ls -ltr
+    # 设置环境变量，解决拉依赖拉不下来的问题
+    - export GOPROXY=https://goproxy.cn
+    # 执行编译
+    - go mod vendor
+    - go build -o app main.go
+  artifacts:
+    # 将编译打包后生成的发布目录传给 release
+    paths:
+      - app
+  only:
+    variables:
+    - ($CI_COMMIT_TAG =~ /^TAG-SUBMIT-.*/ || $CI_COMMIT_BRANCH =~ /^release-.*/)   
+
+# 打包静像并推送到仓库
+create-docker-image:
+  stage: create-docker-image
+  # 指定执行镜像
+  image: $REGISTRY/gitlab/docker:latest
+  script:
+    # 查看挂载的文件
+    - pwd && ls -ltr
+    # 打包静像
+    - docker build -t $REGISTRY/apidemo/apidemo:$TAG .
+    # 登录仓库 CI_HARBOR_USER、CI_HARBRO_PWD、CI_HARBOR_PATH变量是从gitlab中设置的
+    - docker login -u "${CI_HARBOR_USER}" -p "${CI_HARBOR_PWD}" "${CI_HARBOR_PATH}"
+    # 推送到仓库
+    - docker push $REGISTRY/apidemo/apidemo:$TAG
+  only:
+    variables:
+    - ($CI_COMMIT_TAG =~ /^TAG-SUBMIT-.*/ || $CI_COMMIT_BRANCH =~ /^release-.*/)
+
+#发布到K8S中
+kubectl-deploy-test:
+  image: $REGISTRY/gitlab/kubectl:latest
+  stage: kubectl-deploy
+  variables: 
+    NAMESPACE: "stg-apidemo"
+  script:
+    - mkdir $HOME/.kube && cat ${KUBE_CONFIG} > $HOME/.kube/config
+    - pwd && ls -ltr
+    - envsubst < yaml/deployment.yaml | kubectl apply -f -
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^TAG-SUBMIT-.*/' 
+  
+
+#发布到K8S中
+kubectl-deploy-prod:
+  image: $REGISTRY/gitlab/kubectl:latest
+  stage: kubectl-deploy
+  variables: 
+    NAMESPACE: "prod-apidemo"
+  script:
+    - mkdir $HOME/.kube && cat ${KUBE_CONFIG} > $HOME/.kube/config
+    - pwd && ls -ltr
+    - envsubst < yaml/deployment.yaml | kubectl apply -f -
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release-.*/' 
